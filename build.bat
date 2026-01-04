@@ -1,5 +1,5 @@
 @echo off
-echo Building FileOrganizer.exe...
+echo Building PDFTools.exe...
 
 pyinstaller --onefile --windowed --hidden-import=customtkinter --hidden-import=darkdetect --collect-all=customtkinter main.py
 
