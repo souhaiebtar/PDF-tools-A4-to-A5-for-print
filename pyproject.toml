@@ -8,3 +8,13 @@ dependencies = [
     "customtkinter>=5.2.2",
     "pillow>=12.0.0",
 ]
+
+[tool.pyinstaller]
+# PyInstaller configuration
+exe = "main.py"
+onefile = true
+windowed = true
+
+[tool.pyinstaller.options]
+hiddenimports = ["customtkinter", "darkdetect"]
+collectall = ["customtkinter"]
