@@ -5,11 +5,68 @@ Reorder PDF pages and apply 2-up imposition using qpdf and pdfcpu.
 """
 
 import os
+import shutil
 import subprocess
+import sys
 import threading
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
+
+
+def _candidate_base_dirs():
+    """Where to look for bundled dependencies (dev + PyInstaller)."""
+    dirs = []
+
+    # PyInstaller: prefer folder next to the exe (where users can ship dependencies/)
+    if getattr(sys, "frozen", False):
+        dirs.append(os.path.dirname(sys.executable))
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            dirs.append(meipass)
+
+    # Dev: folder containing main.py
+    dirs.append(os.path.dirname(os.path.abspath(__file__)))
+
+    # De-duplicate while preserving order
+    unique_dirs = []
+    for d in dirs:
+        if d and d not in unique_dirs:
+            unique_dirs.append(d)
+    return unique_dirs
+
+
+def resolve_pdfcpu_path():
+    env = os.environ.get("PDFCPU_PATH")
+    if env and os.path.exists(env):
+        return env
+
+    exe_name = "pdfcpu.exe" if os.name == "nt" else "pdfcpu"
+    for base in _candidate_base_dirs():
+        candidate = os.path.join(base, "dependencies", exe_name)
+        if os.path.exists(candidate):
+            return candidate
+
+    return shutil.which("pdfcpu")
+
+
+def resolve_qpdf_path():
+    env = os.environ.get("QPDF_PATH")
+    if env and os.path.exists(env):
+        return env
+
+    exe_name = "qpdf.exe" if os.name == "nt" else "qpdf"
+    for base in _candidate_base_dirs():
+        candidate = os.path.join(base, "dependencies", "qpdf", exe_name)
+        if os.path.exists(candidate):
+            return candidate
+
+    return shutil.which("qpdf")
+
+
+# Resolved tool paths (may be None if not found)
+PDFCPU_PATH = resolve_pdfcpu_path()
+QPDF_PATH = resolve_qpdf_path()
 
 
 class PDFToolsApp:
@@ -368,17 +425,50 @@ class PDFToolsApp:
                 output_file = os.path.join(pdf_folder, output_filename)
             self.nup_output_entry.insert(0, output_file)
             
-        # Check if tools are available
-        try:
-            subprocess.check_output(["pdfcpu", "version"], stderr=subprocess.STDOUT)
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        # Resolve tools (bundled dependencies/ first, then PATH)
+        pdfcpu_path = resolve_pdfcpu_path()
+        if not pdfcpu_path:
+            exe_name = "pdfcpu.exe" if os.name == "nt" else "pdfcpu"
+            searched = "\n".join(
+                f"  - {os.path.join(base, 'dependencies', exe_name)}" for base in _candidate_base_dirs()
+            )
             messagebox.showerror(
-                "Error", 
-                "pdfcpu is not installed or not found in PATH.\n\n"
-                "Please install pdfcpu first:\n"
-                "  Windows: scoop install pdfcpu\n"
-                "  macOS: brew install pdfcpu\n"
-                "  Linux: apt install pdfcpu"
+                "Error",
+                "pdfcpu was not found.\n\n"
+                "Looked for a bundled copy at:\n"
+                f"{searched}\n\n"
+                "Also searched in PATH.\n\n"
+                "Fix: place pdfcpu in the dependencies folder."
+            )
+            return
+
+        qpdf_path = resolve_qpdf_path()
+        if not qpdf_path:
+            exe_name = "qpdf.exe" if os.name == "nt" else "qpdf"
+            searched = "\n".join(
+                f"  - {os.path.join(base, 'dependencies', 'qpdf', exe_name)}" for base in _candidate_base_dirs()
+            )
+            messagebox.showerror(
+                "Error",
+                "qpdf was not found.\n\n"
+                "Looked for a bundled copy at:\n"
+                f"{searched}\n\n"
+                "Also searched in PATH.\n\n"
+                "Install options:\n"
+                "  Windows: scoop install qpdf\n"
+                "  macOS: brew install qpdf\n"
+                "  Linux: apt install qpdf"
+            )
+            return
+
+        # Sanity check that qpdf starts (fixes false negatives from invalid args)
+        version = subprocess.run([qpdf_path, "--version"], capture_output=True, text=True, check=False)
+        if version.returncode != 0:
+            messagebox.showerror(
+                "Error",
+                "qpdf was found but failed to run.\n\n"
+                f"Command: {qpdf_path} --version\n\n"
+                f"Output:\n{version.stdout}\n\nError:\n{version.stderr}"
             )
             return
             
@@ -387,9 +477,13 @@ class PDFToolsApp:
         self.root.update()
         
         # Run in a separate thread
-        threading.Thread(target=self._nup_thread, args=(pdf_file, output_file, swap_pages), daemon=True).start()
+        threading.Thread(
+            target=self._nup_thread,
+            args=(pdf_file, output_file, swap_pages, pdfcpu_path, qpdf_path),
+            daemon=True
+        ).start()
         
-    def _nup_thread(self, pdf_file, output_file, swap_pages):
+    def _nup_thread(self, pdf_file, output_file, swap_pages, pdfcpu_path, qpdf_path):
         """Background thread for 2-up imposition with optional page swapping"""
         try:
             temp_file = None
@@ -399,7 +493,7 @@ class PDFToolsApp:
                 temp_file = output_file + ".temp.pdf"
                 
                 # Get total number of pages
-                n_output = subprocess.check_output(["qpdf", "--show-npages", pdf_file]).decode().strip()
+                n_output = subprocess.check_output([qpdf_path, "--show-npages", pdf_file]).decode().strip()
                 n = int(n_output)
                 
                 # Create swapped page order: 2,1,4,3,6,5,...
@@ -414,7 +508,7 @@ class PDFToolsApp:
                 
                 # Execute qpdf command to create swapped PDF
                 subprocess.check_call([
-                    "qpdf", 
+                    qpdf_path,
                     pdf_file, 
                     "--pages", 
                     ".", 
@@ -429,7 +523,7 @@ class PDFToolsApp:
             
             # Apply 2-up imposition with pdfcpu
             result = subprocess.run([
-                "pdfcpu", 
+                pdfcpu_path,
                 "nup", 
                 "--", 
                 output_file,
@@ -526,19 +620,69 @@ class PDFToolsApp:
                 final_output = os.path.join(pdf_folder, output_file)
             else:
                 final_output = os.path.join(pdf_folder, f"{base_name}_reordered_2up.pdf")
+
+        # Resolve tools (bundled dependencies/ first, then PATH)
+        pdfcpu_path = resolve_pdfcpu_path()
+        if not pdfcpu_path:
+            exe_name = "pdfcpu.exe" if os.name == "nt" else "pdfcpu"
+            searched = "\n".join(
+                f"  - {os.path.join(base, 'dependencies', exe_name)}" for base in _candidate_base_dirs()
+            )
+            messagebox.showerror(
+                "Error",
+                "pdfcpu was not found.\n\n"
+                "Looked for a bundled copy at:\n"
+                f"{searched}\n\n"
+                "Also searched in PATH.\n\n"
+                "Fix: place pdfcpu in the dependencies folder."
+            )
+            return
+
+        qpdf_path = resolve_qpdf_path()
+        if not qpdf_path:
+            exe_name = "qpdf.exe" if os.name == "nt" else "qpdf"
+            searched = "\n".join(
+                f"  - {os.path.join(base, 'dependencies', 'qpdf', exe_name)}" for base in _candidate_base_dirs()
+            )
+            messagebox.showerror(
+                "Error",
+                "qpdf was not found.\n\n"
+                "Looked for a bundled copy at:\n"
+                f"{searched}\n\n"
+                "Also searched in PATH.\n\n"
+                "Install options:\n"
+                "  Windows: scoop install qpdf\n"
+                "  macOS: brew install qpdf\n"
+                "  Linux: apt install qpdf"
+            )
+            return
+
+        version = subprocess.run([qpdf_path, "--version"], capture_output=True, text=True, check=False)
+        if version.returncode != 0:
+            messagebox.showerror(
+                "Error",
+                "qpdf was found but failed to run.\n\n"
+                f"Command: {qpdf_path} --version\n\n"
+                f"Output:\n{version.stdout}\n\nError:\n{version.stderr}"
+            )
+            return
                 
         # Update status
         self.combined_status.configure(text="Processing... Please wait.", text_color="yellow")
         self.root.update()
         
         # Run combined operation in a separate thread
-        threading.Thread(target=self._combined_thread, args=(pdf_file, start_page, temp_file, final_output, swap_on_nup), daemon=True).start()
+        threading.Thread(
+            target=self._combined_thread,
+            args=(pdf_file, start_page, temp_file, final_output, swap_on_nup, pdfcpu_path, qpdf_path),
+            daemon=True
+        ).start()
         
-    def _combined_thread(self, pdf_file, start_page, temp_file, final_output, swap_on_nup):
+    def _combined_thread(self, pdf_file, start_page, temp_file, final_output, swap_on_nup, pdfcpu_path, qpdf_path):
         """Background thread for combined reorder + nup with optional left/right swap"""
         try:
             # Step 1: Reorder pages with 1,3,2,4 pattern from starting page
-            n_output = subprocess.check_output(["qpdf", "--show-npages", pdf_file]).decode().strip()
+            n_output = subprocess.check_output([qpdf_path, "--show-npages", pdf_file]).decode().strip()
             n = int(n_output)
             
             pages = list(range(1, n + 1))
@@ -561,7 +705,7 @@ class PDFToolsApp:
             
             # Execute qpdf command to create reordered PDF
             subprocess.check_call([
-                "qpdf", 
+                qpdf_path,
                 pdf_file, 
                 "--pages", 
                 ".", 
@@ -578,7 +722,7 @@ class PDFToolsApp:
                 swapped_nup_file = final_output + ".swapped.pdf"
                 
                 # Get page count of reordered PDF
-                n2_output = subprocess.check_output(["qpdf", "--show-npages", temp_file]).decode().strip()
+                n2_output = subprocess.check_output([qpdf_path, "--show-npages", temp_file]).decode().strip()
                 n2 = int(n2_output)
                 
                 # Create swapped page order for 2-up: 2,1,4,3,6,5,...
@@ -593,7 +737,7 @@ class PDFToolsApp:
                 
                 # Execute qpdf command
                 subprocess.check_call([
-                    "qpdf", 
+                    qpdf_path,
                     temp_file, 
                     "--pages", 
                     ".", 
@@ -606,7 +750,7 @@ class PDFToolsApp:
             
             # Step 3: Apply pdfcpu nup
             result = subprocess.run([
-                "pdfcpu", 
+                pdfcpu_path,
                 "nup", 
                 "--", 
                 final_output,
@@ -638,13 +782,14 @@ class PDFToolsApp:
             error_msg = f"Operation failed with exit code {e.returncode}"
             self.root.after(0, lambda: self._combined_failed(error_msg))
         except Exception as e:
+            error_msg = str(e)
             # Clean up temp files
             if os.path.exists(temp_file):
                 try:
                     os.remove(temp_file)
                 except:
                     pass
-            self.root.after(0, lambda: self._combined_failed(str(e)))
+            self.root.after(0, lambda msg=error_msg: self._combined_failed(msg))
             
     def _combined_completed(self, output_file):
         """Called when combined operation is completed"""
