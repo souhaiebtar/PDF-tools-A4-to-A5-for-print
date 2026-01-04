@@ -1,7 +1,9 @@
 @echo off
+setlocal
+pushd %~dp0
 echo Building PDFTools.exe...
 
-pyinstaller --onefile --windowed --hidden-import=customtkinter --hidden-import=darkdetect --collect-all=customtkinter main.py
+pyinstaller --noconfirm --clean main.spec
 
 if exist dist\main.exe (
     echo.
@@ -9,3 +11,6 @@ if exist dist\main.exe (
 ) else (
     echo Build failed!
 )
+
+popd
+endlocal
