@@ -33,6 +33,28 @@ qpdf_dir = os.path.join(deps_dir, "qpdf")
 if os.path.isdir(qpdf_dir):
     _add_tree(qpdf_dir, os.path.join("dependencies", "qpdf"), binaries)
 
+# App icon source (also bundled as data so the running app can set the window icon).
+icon_file = None
+if os.name == "nt":
+    app_png = os.path.join(deps_dir, "app.png")
+    if os.path.exists(app_png):
+        datas.append((app_png, "dependencies"))
+        try:
+            from PIL import Image
+
+            icon_file = os.path.join(BASE_DIR, "build", "app.ico")
+            os.makedirs(os.path.dirname(icon_file), exist_ok=True)
+            img = Image.open(app_png).convert("RGBA")
+            img.save(
+                icon_file,
+                sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+            )
+            # Bundle the generated .ico so the running app can use it for the window icon.
+            datas.append((icon_file, "dependencies"))
+        except Exception as e:
+            print(f"WARNING: could not build .ico from {app_png}: {e}")
+            icon_file = None
+
 
 a = Analysis(
     ['main.py'],
@@ -63,6 +85,7 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
+    icon=icon_file,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

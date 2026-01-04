@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from tkinter import filedialog, messagebox
+from tkinter import PhotoImage, filedialog, messagebox
 
 import customtkinter as ctk
 
@@ -64,6 +64,44 @@ def resolve_qpdf_path():
     return shutil.which("qpdf")
 
 
+def _subprocess_no_window_kwargs():
+    """Suppress console windows for subprocesses on Windows GUI builds."""
+    if os.name != "nt":
+        return {}
+
+    kwargs = {}
+
+    # Prevent a console window from being created (most reliable).
+    kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    # Extra safety: explicitly hide any window that might be shown.
+    if hasattr(subprocess, "STARTUPINFO") and hasattr(subprocess, "STARTF_USESHOWWINDOW"):
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
+
+
+def resolve_app_icon_path():
+    """Return path to an app icon file (prefers .ico, falls back to .png)."""
+    rel_candidates = [
+        os.path.join("dependencies", "app.ico"),
+        os.path.join("dependencies", "app.png"),
+        "app.ico",
+        "app.png",
+    ]
+
+    for base in _candidate_base_dirs():
+        for rel in rel_candidates:
+            candidate = os.path.join(base, rel)
+            if os.path.exists(candidate):
+                return candidate
+
+    return None
+
+
 # Resolved tool paths (may be None if not found)
 PDFCPU_PATH = resolve_pdfcpu_path()
 QPDF_PATH = resolve_qpdf_path()
@@ -80,6 +118,10 @@ class PDFToolsApp:
         self.root.title("PDF Tools - Modern GUI with CustomTk")
         self.root.geometry("650x750")
         self.root.minsize(550, 600)
+
+        # Window icon (separate from the EXE icon)
+        self._app_icon_image = None
+        self._apply_window_icon()
         
         # Configure grid layout
         self.root.grid_columnconfigure(0, weight=1)
@@ -99,6 +141,28 @@ class PDFToolsApp:
         self.create_nup_section()
         self.create_combined_section()
         self.create_status_section()
+
+    def _apply_window_icon(self):
+        """Best-effort: set the window/taskbar icon."""
+        icon_path = resolve_app_icon_path()
+        if not icon_path:
+            return
+
+        # On Windows, .ico works best; otherwise use PNG via iconphoto.
+        if os.name == "nt" and icon_path.lower().endswith(".ico"):
+            try:
+                self.root.iconbitmap(icon_path)
+                return
+            except Exception:
+                pass
+
+        try:
+            img = PhotoImage(file=icon_path)
+            self.root.iconphoto(True, img)
+            # Keep a reference so Tk doesn't garbage-collect it
+            self._app_icon_image = img
+        except Exception:
+            pass
     
     def create_scrollable_frame(self):
         """Create a scrollable frame for the main content"""
@@ -283,11 +347,11 @@ class PDFToolsApp:
         
         self.start_page_entry = ctk.CTkEntry(
             self.combined_frame,
-            placeholder_text="10",
+            placeholder_text="1",
             height=35,
             width=100
         )
-        self.start_page_entry.insert(0, "10")
+        self.start_page_entry.insert(0, "1")
         self.start_page_entry.grid(row=1, column=1, padx=15, pady=5, sticky="w")
         
         self.start_page_info = ctk.CTkLabel(
@@ -462,7 +526,13 @@ class PDFToolsApp:
             return
 
         # Sanity check that qpdf starts (fixes false negatives from invalid args)
-        version = subprocess.run([qpdf_path, "--version"], capture_output=True, text=True, check=False)
+        version = subprocess.run(
+            [qpdf_path, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            **_subprocess_no_window_kwargs(),
+        )
         if version.returncode != 0:
             messagebox.showerror(
                 "Error",
@@ -493,7 +563,10 @@ class PDFToolsApp:
                 temp_file = output_file + ".temp.pdf"
                 
                 # Get total number of pages
-                n_output = subprocess.check_output([qpdf_path, "--show-npages", pdf_file]).decode().strip()
+                n_output = subprocess.check_output(
+                    [qpdf_path, "--show-npages", pdf_file],
+                    **_subprocess_no_window_kwargs(),
+                ).decode().strip()
                 n = int(n_output)
                 
                 # Create swapped page order: 2,1,4,3,6,5,...
@@ -507,29 +580,38 @@ class PDFToolsApp:
                 page_arg = ",".join(map(str, swapped_pages))
                 
                 # Execute qpdf command to create swapped PDF
-                subprocess.check_call([
-                    qpdf_path,
-                    pdf_file, 
-                    "--pages", 
-                    ".", 
-                    page_arg, 
-                    "--", 
-                    temp_file
-                ])
+                subprocess.check_call(
+                    [
+                        qpdf_path,
+                        pdf_file,
+                        "--pages",
+                        ".",
+                        page_arg,
+                        "--",
+                        temp_file,
+                    ],
+                    **_subprocess_no_window_kwargs(),
+                )
                 
                 input_for_nup = temp_file
             else:
                 input_for_nup = pdf_file
             
             # Apply 2-up imposition with pdfcpu
-            result = subprocess.run([
-                pdfcpu_path,
-                "nup", 
-                "--", 
-                output_file,
-                "2", 
-                input_for_nup
-            ], capture_output=True, text=True, check=False)
+            result = subprocess.run(
+                [
+                    pdfcpu_path,
+                    "nup",
+                    "--",
+                    output_file,
+                    "2",
+                    input_for_nup,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                **_subprocess_no_window_kwargs(),
+            )
             
             # Clean up temporary file
             if temp_file and os.path.exists(temp_file):
@@ -657,7 +739,13 @@ class PDFToolsApp:
             )
             return
 
-        version = subprocess.run([qpdf_path, "--version"], capture_output=True, text=True, check=False)
+        version = subprocess.run(
+            [qpdf_path, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            **_subprocess_no_window_kwargs(),
+        )
         if version.returncode != 0:
             messagebox.showerror(
                 "Error",
@@ -682,7 +770,10 @@ class PDFToolsApp:
         """Background thread for combined reorder + nup with optional left/right swap"""
         try:
             # Step 1: Reorder pages with 1,3,2,4 pattern from starting page
-            n_output = subprocess.check_output([qpdf_path, "--show-npages", pdf_file]).decode().strip()
+            n_output = subprocess.check_output(
+                [qpdf_path, "--show-npages", pdf_file],
+                **_subprocess_no_window_kwargs(),
+            ).decode().strip()
             n = int(n_output)
             
             pages = list(range(1, n + 1))
@@ -704,15 +795,18 @@ class PDFToolsApp:
             page_arg = ",".join(map(str, final))
             
             # Execute qpdf command to create reordered PDF
-            subprocess.check_call([
-                qpdf_path,
-                pdf_file, 
-                "--pages", 
-                ".", 
-                page_arg, 
-                "--", 
-                temp_file
-            ])
+            subprocess.check_call(
+                [
+                    qpdf_path,
+                    pdf_file,
+                    "--pages",
+                    ".",
+                    page_arg,
+                    "--",
+                    temp_file,
+                ],
+                **_subprocess_no_window_kwargs(),
+            )
             
             # Step 2: Apply 2-up imposition
             input_for_nup = temp_file
@@ -722,7 +816,10 @@ class PDFToolsApp:
                 swapped_nup_file = final_output + ".swapped.pdf"
                 
                 # Get page count of reordered PDF
-                n2_output = subprocess.check_output([qpdf_path, "--show-npages", temp_file]).decode().strip()
+                n2_output = subprocess.check_output(
+                    [qpdf_path, "--show-npages", temp_file],
+                    **_subprocess_no_window_kwargs(),
+                ).decode().strip()
                 n2 = int(n2_output)
                 
                 # Create swapped page order for 2-up: 2,1,4,3,6,5,...
@@ -736,27 +833,36 @@ class PDFToolsApp:
                 page_arg2 = ",".join(map(str, swapped_pages))
                 
                 # Execute qpdf command
-                subprocess.check_call([
-                    qpdf_path,
-                    temp_file, 
-                    "--pages", 
-                    ".", 
-                    page_arg2, 
-                    "--", 
-                    swapped_nup_file
-                ])
+                subprocess.check_call(
+                    [
+                        qpdf_path,
+                        temp_file,
+                        "--pages",
+                        ".",
+                        page_arg2,
+                        "--",
+                        swapped_nup_file,
+                    ],
+                    **_subprocess_no_window_kwargs(),
+                )
                 
                 input_for_nup = swapped_nup_file
             
             # Step 3: Apply pdfcpu nup
-            result = subprocess.run([
-                pdfcpu_path,
-                "nup", 
-                "--", 
-                final_output,
-                "2", 
-                input_for_nup
-            ], capture_output=True, text=True, check=False)
+            result = subprocess.run(
+                [
+                    pdfcpu_path,
+                    "nup",
+                    "--",
+                    final_output,
+                    "2",
+                    input_for_nup,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                **_subprocess_no_window_kwargs(),
+            )
             
             # Clean up temporary files
             if os.path.exists(temp_file):
