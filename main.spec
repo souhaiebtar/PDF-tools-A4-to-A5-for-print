@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
-hiddenimports = ['customtkinter', 'darkdetect']
+hiddenimports = ['customtkinter', 'darkdetect', 'utils', 'utils.path_resolver', 'utils.subprocess_utils', 'utils.pdf_processor']
 tmp_ret = collect_all('customtkinter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
