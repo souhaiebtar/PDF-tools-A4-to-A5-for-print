@@ -77,6 +77,12 @@ python dependencies/download_dependencies.py
    - Set starting page for reordering pattern
 5. **Click Process**: The tool runs in background and shows result
 
+### Before Conversion
+![Before Conversion - Normal View](screenshot/NormalView.png)
+
+### After Conversion
+![After Conversion - Execution Complete](screenshot/AfterExecution.png)
+
 ## Project Structure
 
 ```
