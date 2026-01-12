@@ -54,6 +54,8 @@ pip install pyinstaller
 build.bat
 ```
 
+
+
 The executable will be created in `dist/main.exe`.
 
 ## Dependencies Download
