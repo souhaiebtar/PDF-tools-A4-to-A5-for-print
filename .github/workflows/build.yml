@@ -52,8 +52,12 @@ jobs:
           name: main-exe
           path: dist
 
+      - name: Rename release asset
+        run: Rename-Item -Path dist/main.exe -NewName pdf-tools-windows.exe
+
       - name: Upload executable to GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/main.exe
+          name: PDF Tools for Windows ${{ github.ref_name }}
+          files: dist/pdf-tools-windows.exe
           generate_release_notes: true
